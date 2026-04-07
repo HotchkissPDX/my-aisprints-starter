@@ -1,2 +1,5 @@
-# Load .env.development* files when running `wrangler dev`
+# Copy to `.dev.vars` for local Cloudflare / OpenNext dev bindings.
 NEXTJS_ENV=development
+
+# Required for auth (session signing). Use a long random string; never commit real secrets.
+AUTH_SECRET=
