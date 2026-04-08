@@ -113,7 +113,36 @@ Then complete **local configuration** below before running the app.
 - **`npm run dev`** — Next.js dev server (Turbopack) with OpenNext Cloudflare dev integration; requires `.dev.vars` and local D1 migrations as above.
 - **`npm run lint`** — ESLint.
 - **`npm run test`** — Vitest unit tests.
-- **Auth routing (`src/middleware.ts`)** — Without a session, `/questions` redirects to `/`. With a valid session, `/` and `/signup` redirect to `/questions`. `/api/auth/*` is not intercepted by this middleware.
+
+## API authentication (how session checks work)
+
+Protected API route handlers (for example **`/api/questions`**) do **not** duplicate middleware logic. They call **`requireAuth()`** (`src/lib/auth/require-session.ts`), which answers: “Is there a **verified** session cookie for this request?”
+
+### End-to-end path
+
+1. **Cookie on login/signup** — After successful **`POST /api/auth/login`** or **`POST /api/auth/signup`**, the handler calls **`setSessionCookie(userId, email)`** (`src/lib/auth/session-cookie.ts`). That builds a signed token with **`signSession`** (`src/lib/auth/session-token.ts`) using **`AUTH_SECRET`** and sets the **httpOnly** cookie (name in `src/lib/auth/constants.ts`).
+
+2. **Later requests** — The browser sends that cookie on same-site requests to your app (including `fetch` to `/api/...`).
+
+3. **`requireAuth()`** — Calls **`getSessionFromCookies()`** (same `session-cookie.ts` module). That reads the raw cookie value (if any) and passes it to **`verifySession(token, secret)`** (`session-token.ts`).
+
+4. **`verifySession`** — **This is where the token is cryptographically checked.** It:
+   - Parses the token as `payloadSegment.signatureSegment` (both base64url).
+   - Verifies **HMAC-SHA256** over the payload segment with a key derived from **`AUTH_SECRET`** (`crypto.subtle.verify`). Forged or tampered tokens fail here and yield **`null`**.
+   - Decodes the JSON payload (`userId`, `email`, `exp`) and rejects expired sessions (`exp` must be in the future).
+
+5. **Result** — If verification fails or the cookie is missing, **`getSessionFromCookies()`** returns **`null`**, **`requireAuth()`** returns a **401** JSON response (`{ "error": "Unauthorized" }`). If verification succeeds, **`requireAuth()`** returns **`{ ok: true, userId }`** for the handler to pass into services (e.g. D1 queries scoped by user).
+
+So: **`require-session.ts` does not implement HMAC itself**; it delegates to **`getSessionFromCookies` → `verifySession`**, which performs signature verification and expiry checks using the same secret as login/signup.
+
+### Middleware vs API
+
+| Concern | Behavior |
+|--------|----------|
+| **Pages** (`/`, `/signup`, `/questions`, …) | **`src/middleware.ts`** checks the session cookie (via `verifySession`) and **redirects** guests or logged-in users as configured. |
+| **API routes** under `/api/questions` (and similar) | **No redirect.** Handlers use **`requireAuth()`**; invalid or missing sessions get **401 JSON**. |
+
+Both paths rely on the **same** signed cookie format and **`AUTH_SECRET`**; only the **response shape** differs (redirect vs JSON).
 
 ## Project structure (high level)
 
@@ -122,6 +151,7 @@ Then complete **local configuration** below before running the app.
 - `docs/PRODUCT_OVERVIEW.md` — Product notes
 - `docs/BASIC_AUTHENTICATION.md` — Example auth PRD and implementation map
 - `src/app/` — Next.js App Router (pages, API routes, middleware via `src/middleware.ts`)
+- `src/components/mcq/` — Multiple-choice question UI (index table, preview dialog, row actions)
 - `migrations/` — D1 SQL migrations
 - `wrangler.jsonc` — Cloudflare Worker, D1 binding, migrations directory
 
